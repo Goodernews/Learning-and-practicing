@@ -1,0 +1,362 @@
+---
+title: "First steps withigraph"
+author: "Taylor Blair"
+date: "11/10/2020"
+output: pdf_document
+urlcolor: blue
+---
+
+As part of a week long Data Science project with a partner, I learned entity linking and how to create network graphs with `igraph` 
+
+*This might not knit as is, patches will be coming*
+
+#Setup
+
+Items needed for creating network graphs
+
+##Importing Libraries
+
+```{r, message=FALSE}
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(igraph)
+library(tidycensus)
+library(sf) 
+```
+
+##Helper Functions
+```{r}
+only_n_min <- function(vector_in){
+  
+  n<-3
+  min_val <- sort(vector_in, decreasing=FALSE)[n]
+  vector_in[vector_in > min_val] <- 0
+  
+  return(vector_in)
+}
+
+```
+
+#Data Setup
+
+##Importing data
+
+Several sources of data...
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+college_covid <- read_csv("https://raw.githubusercontent.com/nytimes/covid-19-data/master/colleges/colleges.csv")
+
+county_covid <- read_csv("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv")
+
+county_data <- read_excel("co-est2019-annres.xlsx") # 2019 census pop info
+
+diversity_school <- 
+  read_csv("https://raw.githubusercontent.com/Reed-Statistics/data-viz-competition-2020/main/data/diversity_school.csv") %>%
+  dplyr::select(-X1) # Used to generate enrolment of students
+
+salary_potential <-
+  read_csv("https://raw.githubusercontent.com/Reed-Statistics/data-viz-competition-2020/main/data/salary_potential.csv") %>%
+  dplyr::select(-X1)
+
+tuition_cost <-
+  read_csv("https://raw.githubusercontent.com/Reed-Statistics/data-viz-competition-2020/main/data/tuition_cost.csv") %>% 
+  dplyr::select(-X1)
+```
++ `college_covid`
+    + The data comes from the [NYT Covid 19 college](https://github.com/nytimes/covid-19-data/tree/master/colleges) dataset.
+    + It tracks `r length(drop_na(college_covid,cases)$cases)` colleges. The NYT elaborated on which colleges are present in the dataset: "*...every four-year public institution and every private college that competes in N.C.A.A. sports*"
+        + This does **not** mean that a college must have an NCAA team to be present in the dataset. Instead if the college **has** a NCAA sports it will be in the dataset.
+    + The data is not historic or timestamped, instead they are updated biweekly. The data was last updated: `r median(college_covid$date)`
+    + Reed College is present and currently has `r college_covid[college_covid[,6]=="Reed College",]$cases` reported cases.
+    + We use this dataset to compare college covid cases to the college.
++ `county_covid`
+    + The data comes from the [NYT Covid 19](https://github.com/nytimes/covid-19-data) dataset.
+    + It tracks `r length(unique(county_covid[c(2,3)])$county)` US counties. There is some issues regarding cases that are counted, further discussion of this can be found on the [NYT Covid 19 Github Repo](https://github.com/nytimes/covid-19-data/blob/master/PROBABLE-CASES-NOTE.md)
+    + Data ranges from `r min(county_covid$date)` to `r max(county_covid$date)`
+        + We use historical data from `r median(college_covid$date)`
+    + We use this dataset to compare the county the college resides in.
++ `county_data`
+    + This data comes from the US Census Bureau
+    + It contains population estimates for `r 3152-5` counties from the 2010 census to 2019. 
+        + 2020 population is not in the dataset as the census is ongoing.
++ `diversity_school`
+    + Data is sourced from [Tuition Tracker](https://www.tuitiontracker.org/) and was distibuted as part of the project through the [github repo](https://github.com/Reed-Statistics/data-viz-competition-2020).
+    + Each row represents a potential minority category and the total enrolled students. There are `r length(unique(diversity_school$category))` unique categories and `r length(unique(diversity_school$name))` schools.
+    + We use this dataset for: 
+        + Total enrolled students which helps us to normalize the data.
+        + Compare minority majority colleges to laregly white colleges
++ `salary_potential`
+    + Data is sourced from [Tuition Tracker](https://www.tuitiontracker.org/) and was distibuted as part of the project through the [github repo](https://github.com/Reed-Statistics/data-viz-competition-2020).
+    + Each row represents a school and the carrer students recieve after graduating, percent STEM students, and wheter graduates "*Think they are making the world a better place*".
+    + There are `r length(salary_potential$name)` schools represented.
++ `tuition_cost`
+    + ...
+    
+#Data Prep
+
+##Manual Entity Linking
+```{r, echo=FALSE}
+college_covid$county[college_covid$county=="New York City"] <- "New York"
+college_covid$county[college_covid$county=="City of St. Louis"] <- "St. Louis city"
+college_covid$county[college_covid$county=="Baltimore City"] <- "Baltimore city"
+
+college_covid$county[college_covid$county=="Washington, D.C."] <- "District of Columbia"
+college_covid$state[college_covid$state=="Washington, D.C."] <- "Washington"
+
+college_covid$college[college_covid$college=="University of Wisconsin-Madison"] <- "University of Wisconsin at Madison"
+college_covid$college[college_covid$college=="Indiana University Bloomington"] <- "Indiana University at Bloomington"
+college_covid$college[college_covid$college=="University of Michigan"] <- "University of Michigan at Ann Arbor"
+college_covid$college[college_covid$college=="University of Michigan-Dearborn"] <- "University of Michigan at Dearborn"
+college_covid$college[college_covid$college=="University of Michigan-Flint"] <- "University of Michigan at Flint"
+college_covid$college[college_covid$college=="University of Arkansas"] <- "University of Arkansas at Fayetteville"
+college_covid$college[college_covid$college=="University of California, Los Angeles"] <- "University of California at Los Angeles"
+college_covid$college[college_covid$college=="University of California, San Diego"] <- "University of California at San Diego"
+college_covid$college[college_covid$college=="University of California, San Francisco"] <- "University of California at San Francisco"
+college_covid$college[college_covid$college=="University of California, Berkeley"] <- "University of California at Berkeley"
+college_covid$college[college_covid$college=="University of California, Irvine"] <- "University of California at Irvine"
+college_covid$college[college_covid$college=="University of California, Davis"] <- "University of California at Davis"
+college_covid$college[college_covid$college=="University of California, Merced"] <- "University of California at Merced"
+college_covid$college[college_covid$college=="University of California, Riverside"] <- "University of California at Riverside"
+college_covid$college[college_covid$college=="University of California, Santa Barbara"] <- "University of California at Santa Barbara"
+college_covid$college[college_covid$college=="University of California, Santa Cruz"] <- "University of California at Santa Cruz"
+college_covid$college[college_covid$college=="University of California, Hastings College of Law"] <- "University of California-Hastings College of the Law"
+college_covid$college[college_covid$college=="San Diego State University System"] <- "San Diego State University"
+college_covid$college[college_covid$college=="California Polytechnic State University, San Luis Obispo"] <- "California Polytechnic State University at San Luis Obispo"
+college_covid$college[college_covid$college=="University of Illinois Urbana-Champaign"] <- "University of Illinois at Urbana-Champaign"
+college_covid$college[college_covid$college=="University of Alabama"] <- "University of Alabama at Tuscaloosa"
+college_covid$college[college_covid$college=="University of Missouri"] <- "University of Missouri at Columbia"
+college_covid$college[college_covid$college=="University of South Carolina"] <- "University of South Carolina at Columbia"
+college_covid$college[college_covid$college=="Texas A&M University"] <- "Texas A&M University at College Station"
+college_covid$college[college_covid$college=="Texas A&M University-Commerce"] <- "Texas A&M University at Commerce"
+college_covid$college[college_covid$college=="Texas A&M University-Corpus Christi"] <- "Texas A&M University at Corpus Christi"
+college_covid$college[college_covid$college=="Texas A&M University-Kingsville"] <- "Texas A&M University at Kingsville"
+college_covid$college[college_covid$college=="Texas A&M University-Texarkana"] <- "Texas A&M University at Texarkana"
+college_covid$college[college_covid$college=="University of Colorado Boulder"] <- "University of Colorado at Boulder"
+college_covid$college[college_covid$college=="Purdue University"] <- "Purdue University at West Lafayette"
+college_covid$college[college_covid$college=="University of Tennessee, Knoxville"] <- "University of Tennessee at Knoxville"
+college_covid$college[college_covid$college=="University of Oklahoma"] <- "University of Oklahoma at Norman"
+college_covid$college[college_covid$college=="Louisiana State University"] <- "Louisiana State University at Baton Rouge"
+college_covid$college[college_covid$college=="University of Nebraska-Lincoln"] <- "University of Nebraska at Lincoln"
+college_covid$college[college_covid$college=="Utah State University"] <- "University ah State U."
+college_covid$college[college_covid$college=="University ah Valley U."] <- "University ah Valley U."
+college_covid$college[college_covid$college=="University of Wisconsin at Oshkosh"] <- "University of Wisconsin-Oshkosh"
+college_covid$college[college_covid$college=="Tulane University of Louisiana"] <- "Tulane University"
+college_covid$college[college_covid$college=="University of Maryland, College Park"] <- "University of Maryland at College Park"
+college_covid$college[college_covid$college=="University of Nevada, Reno"] <- "University of Nevada at Reno"
+college_covid$college[college_covid$college=="University of Nevada, Las Vegas"] <- "University of Nevada at Las Vegas"
+college_covid$college[college_covid$college=="Linfield University"] <- "Linfield College"
+college_covid$college[college_covid$college=="Linfield University-School of Nursing"] <- "Linfield College School of Nursing"
+college_covid$college[college_covid$college=="George Washington University"] <- "George Washington University District o"
+college_covid$college[college_covid$college=="Trinity Washington University"] <- "Trinity Washington University District o"
+college_covid$college[college_covid$college=="California State University, San Marcos"] <- "California State University at San Marcos"
+college_covid$college[college_covid$college=="California State University, San Bernardino"] <- "California State University at San Bernardino"
+college_covid$college[college_covid$college=="California State University, Sacramento"] <- "California State University at Sacramento"
+college_covid$college[college_covid$college=="California State University, Northridge"] <- "California State University at Northridge"
+college_covid$college[college_covid$college=="California State University, Los Angeles"] <- "California State University at Los Angeles"
+college_covid$college[college_covid$college=="California State University, Long Beach"] <- "California State University at Long Beach"
+college_covid$college[college_covid$college=="California State University, Fullerton"] <- "California State University at Fullerton"
+college_covid$college[college_covid$college=="California State University, Chico"] <- "California State University at Chico"
+college_covid$college[college_covid$college=="California State University, Bakersfield"] <- "California State University at Bakersfield"
+college_covid$college[college_covid$college=="California State University, Monterey Bay"] <- "California State University -Monterey Bay"
+college_covid$college[college_covid$college=="California State University, East Bay"] <- "California State University -East Bay"
+college_covid$college[college_covid$college=="California State University, Dominguez Hills"] <- "California State University -Dominguez Hills"
+college_covid$college[college_covid$college=="California State University, Channel Islands"] <- "California State University -Channel Islands"
+college_covid$college[college_covid$college=="California State University, Stanislaus"] <- "California State University Stanislaus"
+college_covid$college[college_covid$college=="California State University Maritime Academy"] <- "Cal State Maritime Academy"
+college_covid$college[college_covid$college=="SUNY Cortland"] <- "State University of New York College at Cortland"
+college_covid$college[college_covid$college=="SUNY Oswego"] <- "State University of New York College at Oswego"
+college_covid$college[college_covid$college=="SUNY College at Potsdam"] <- "State University of New York College at Potsdam"
+college_covid$college[college_covid$college=="SUNY Geneseo"] <- "State University of New York College at Geneseo"
+college_covid$college[college_covid$college=="SUNY Old Westbury"] <- "State University of New York College at Old Westbury"
+college_covid$college[college_covid$college=="SUNY Oneonta"] <- "State University of New York College at Oneonta"
+college_covid$college[college_covid$college=="SUNY Plattsburgh"] <- "State University of New York College at Plattsburgh"
+college_covid$college[college_covid$college=="SUNY Delhi"] <- "State University of New York College of Technology at Delhi"
+college_covid$college[college_covid$college=="SUNY Canton"] <- "SUniversity Y Canton-College of Technology"
+college_covid$college[college_covid$college=="SUNY Albany"] <- "University at Albany, SUNY"
+college_covid$college[college_covid$college=="Stony Brook University"] <- "State University of New York at Stony Brook"
+college_covid$college[college_covid$college=="SUNY Binghamton"] <- "Binghamton University"
+college_covid$college[college_covid$college=="University of Wisconsin-Oshkosh"] <- "University of Wisconsin at Oshkosh"
+college_covid$college[college_covid$college=="University of Wisconsin-Milwaukee"] <- "University of Wisconsin at Milwaukee"
+college_covid$college[college_covid$college=="University of Wisconsin-Eau Claire"] <- "University of Wisconsin at Eau Claire"
+college_covid$college[college_covid$college=="University of Wisconsin-Whitewater"] <- "University of Wisconsin at Whitewater"
+college_covid$college[college_covid$college=="University of Wisconsin-La Crosse"] <- "University of Wisconsin at La Crosse"
+college_covid$college[college_covid$college=="University of Wisconsin-Stevens Point"] <- "University of Wisconsin at Stevens Point"
+college_covid$college[college_covid$college=="University of Wisconsin-Platteville"] <- "University of Wisconsin at Platteville"
+college_covid$college[college_covid$college=="University of Wisconsin-River Falls"] <- "University of Wisconsin at River Falls"
+college_covid$college[college_covid$college=="University of Wisconsin-Green Bay"] <- "University of Wisconsin at Green Bay"
+college_covid$college[college_covid$college=="University of Wisconsin-Superior"] <- "University of Wisconsin at Superior"
+college_covid$college[college_covid$college=="Colorado State University"] <- "Colorado State University at Fort Collins"
+
+
+county_covid$county[county_covid$county=="New York City"] <- "New York"
+county_covid$county[county_covid$county=="Charlottesville city"] <- "Charlottesville"
+county_covid$county[county_covid$county=="Norfolk city"] <- "Norfolk"
+county_covid$county[county_covid$county=="Danville city"] <- "Danville"
+county_covid$county[county_covid$county=="Lexington city"] <- "Lexington"
+county_covid$county[county_covid$county=="Radford city"] <- "Radford"
+county_covid$county[county_covid$county=="Newport News city"] <- "Newport News"
+county_covid$county[county_covid$county=="Petersburg city"] <- "Petersburg"
+county_covid$county[county_covid$county=="Hampton city"] <- "Hampton"
+county_covid$county[county_covid$county=="Buena Vista city"] <- "Buena Vista"
+county_covid$state[county_covid$county=="District of Columbia"] <- "Washington"
+```
+
+##Merging datasets
+```{r, warning=FALSE}
+
+pre_clean <- drop_na(college_covid,cases)
+
+county_covid <- county_covid %>%
+  filter(date==median(college_covid$date)) %>%
+  subset(select =-(date)) 
+
+county_data[3, 1] = "Geographic Area"
+colnames(county_data) <- county_data[3, ]
+county_data <- county_data[c(1,13)] # Select county column and 2019 estimate
+county_data <- county_data[-c(1:4),]
+county_data <- county_data %>%
+  separate("Geographic Area", c("county", "state"), " County, ")
+county_data <- county_data[-c(3143:3148),]
+county_data <- rbind(drop_na(county_data),
+                     county_data %>%
+  filter(is.na(state)) %>%
+  subset(select=-(state)) %>%
+  separate("county", c("county", "state"), ", ")) 
+county_data[1] <- lapply(county_data[1], function(y) sub(".", "", y))
+county_data[1] <- lapply(county_data[1], function(y) sub(" Parish", "", y))
+colnames(county_data) <- c("county", "state", "population")
+
+county_data$county[county_data$county=="Norfolk city"] <- "Norfolk"
+county_data$county[county_data$county=="Danville city"] <- "Danville"
+county_data$county[county_data$county=="Lexington city"] <- "Lexington"
+county_data$county[county_data$county=="Caddo Parish"] <- "Caddo"
+county_data$county[county_data$county=="ottineau"] <- "Bottineau"
+county_data$county[county_data$county=="Radford city"] <- "Radford"
+county_data$county[county_data$county=="Charlottesville city"] <- "Charlottesville"
+county_data$county[county_data$county=="Lafayette Parish"] <- "Lafayette"
+county_data$county[county_data$county=="Tangipahoa Parish"] <- "Tangipahoa"
+county_data$county[county_data$county=="Lafourche Parish"] <- "Lafourche"
+county_data$county[county_data$county=="Newport News city"] <- "Newport News"
+county_data$county[county_data$county=="Petersburg city"] <- "Petersburg"
+county_data$county[county_data$county=="Hampton city"] <- "Hampton"
+county_data$county[county_data$county=="Buena Vista city"] <- "Buena Vista"
+county_data$county[county_data$county=="East Baton Rouge Parish"] <- "East Baton Rouge"
+county_data$state[county_data$county=="District of Columbia"] <- "Washington"
+
+college_cases <- college_covid %>%
+  merge(
+    rename( unique(diversity_school[c(1,2)]), 
+           students = total_enrollment), 
+        by.x  = "college", by.y = "name") %>%
+  drop_na(cases) %>%
+  mutate(per_1000 = cases/students*1000) %>%
+  subset(select =-(date)) %>%
+  subset(select =-(notes)) 
+college_cases$county[college_cases$college=="Missouri Southern State University"] <- "Jasper"
+college_cases$county[college_cases$college=="Northern Illinois University"] <- "DeKalb"
+college_cases$county[college_cases$college=="Rockhurst University"] <- "Jackson"
+college_cases$county[college_cases$college=="Ripon College"] <- "Fond du Lac"
+
+college_county_cases <- college_cases %>%
+  merge(county_covid, by  = c("state", "county")) %>%
+  rename(cases_college = cases.x,
+         cases_county = cases.y,
+         college_per_1000 = per_1000) %>%
+  merge(county_data, by  = c("state", "county")) %>%
+  mutate(county_per_1000 = cases_county/population*1000,
+         school_county_ratio = college_per_1000/county_per_1000)
+
+salary_covid <- college_county_cases %>%
+  merge(salary_potential, by.x  = "college", by.y = "name") # %>%
+#  rename(state= state.x) %>%
+#  subset(select =-(state.y))
+
+cost_covid <- college_county_cases %>%
+  merge(tuition_cost, by.x  = "college", by.y = "name") # %>%
+#  rename(state= state.x) %>%
+#  subset(select =-(state.y))
+
+diversity_covid <- college_county_cases %>%
+  merge(diversity_school, by.x  = "college", by.y = "name") %>% 
+  rename(state= state.x) %>%
+  subset(select =-(state.y)) %>%
+  subset(select =-(total_enrollment))
+
+```
+
+```{r}
+#Code created by contest coding partner
+#sp data for US counties
+mapCountiesFull <- counties(state = NULL, cb = TRUE, class = "sp") 
+
+#dataframe with a bunch of college stuff, but most importantly college names, counties, IPEDSID, and (x,y) location
+CollegesWithLocationFull <- read.csv(file = 'CollegesWithLocation.csv') 
+
+CollegeCounties <-  CollegesWithLocationFull %>% 
+                  select(IPEDSID, LONGITUDE, LATITUDE, COUNTYFIPS) %>% 
+                  rename(ipeds_id = IPEDSID) 
+
+percent_women_col <- prop_women %>% select(percent_women, ipeds_id)
+percent_foreign_col <- prop_foreign %>% select(percent_non_resident, ipeds_id)
+percent_minority_col <- prop_minority %>% select(percent_minority, ipeds_id)
+
+TempCollegeData <- merge(college_county_cases, percent_women_col, by = "ipeds_id")
+TempCollegeData <- merge(TempCollegeData, percent_foreign_col, by = "ipeds_id")
+TempCollegeData <- merge(TempCollegeData, percent_minority_col, by = "ipeds_id")
+
+CollegeData <- merge(CollegeCounties, TempCollegeData, by = "ipeds_id")
+CollegeData <- CollegeData %>%
+              mutate(Worse_than_county = ifelse(school_county_ratio > 1, "Yes", "No"))
+```
+
+
+#Creating Network Graph
+```{r}
+num_vars <- 25
+
+mini_table <- CollegeData[c(7, 11, 10, 18:20)]#Table of only numeric values to compare 
+mini_table <- merge(mini_table, drop_na(tuition_cost[c(1, 4:10)]),
+                    by.x = "college",
+                    by.y = "name")
+rownames(mini_table) <- mini_table$college
+mini_table <- mini_table[2:13]
+mini_table <- drop_na(mini_table)
+mini_table <- transform(mini_table,
+                        type=as.numeric(factor(type)),
+                        degree_length = as.numeric(factor(degree_length)))
+
+#rownames(mini_table) <- CollegeData$college[1:leng]
+
+mini_table <- sample_n(mini_table, num_vars) #num colleges
+
+pivot_network <- mini_table$college_per_1000
+
+mini_table <- mini_table[2:12]
+
+
+#mini_table <- scale(mini_table) #scales variables
+mini_table <- apply(mini_table, MARGIN = 2, FUN = function(X) (X - min(X))/diff(range(X)))
+
+#distances <- dist(head(mini_table, num_vars), upper = TRUE, method =  "euclidean")
+
+distances <- lsa::cosine(t(mini_table))
+
+#rownames(distances) <- CollegeData$college[1:num_vars]
+#colnames(distances) <- CollegeData$college[1:num_vars]
+
+distances <- apply(distances, 2, only_n_min)
+
+#distances[distances<quantile(distances, .9)[1]] <- 0
+
+network <- graph_from_adjacency_matrix(distances, weighted = TRUE) 
+
+E(network)$arrow.size <- .2
+
+oranges <- colorRampPalette(c("dark red", "light blue"))
+col_scaling <- oranges(max(CollegeData$college_per_1000))[pivot_network] 
+
+plot(network,
+     vertex.label = colnames(distances),
+     vertex.color=col_scaling)
+```
