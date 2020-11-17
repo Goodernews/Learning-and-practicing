@@ -1,5 +1,5 @@
 ---
-title: "First steps withigraph"
+title: "First steps with igraph"
 author: "Taylor Blair"
 date: "11/10/2020"
 output: pdf_document
